@@ -1,5 +1,5 @@
 import csv
-from typing import Self, List, Dict 
+from typing import List, Dict 
 
 
 
@@ -18,9 +18,11 @@ class EmailApp:
             "body": body}
 
     def send_email(self, email: Dict[str, str]) -> None: # Method to send email
-        print(email)
+        print(f"From: {email['from']}")
+        print(f"To: {email['to']}")
+        print(f"Subject: {email['subject']}")
+        print(f"Body: {email['body']}")
 
-# for demonstration purposes only
 if __name__ == "__main__":
     app = EmailApp()
     rows = app.read_csv_file("grades.csv")
