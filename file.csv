@@ -1,0 +1,4 @@
+email,name,subject,message
+alice@example.com,Alice,Welcome,Hello Alice! Welcome to our service.
+bob@example.com,Bob,Reminder,Hi Bob, just a reminder about your appointment.
+carol@example.com,Carol,Thank You,Thank you Carol for your feedback.
