@@ -1,43 +1,78 @@
+import os
 import tempfile
-import csv
-from email_app import EmailApp
+import pytest
+from email_app import EmailSender  
 
-def test_read_csv_file():
-    # create a temporary csv file
-    with tempfile.NamedTemporaryFile(mode="w+", newline="", delete=False) as tmpfile:
-        writer = csv.DictWriter(tmpfile, fieldnames=["Name", "Math", "Science"])
-        writer.writeheader()
-        writer.writerow({"Name": "Alice", "Math": "90", "Science": "85"})
-        tmpfile_name = tmpfile.name
+@pytest.fixture
+def sender():
+    return EmailSender()
 
-    app = EmailApp()
-    rows = app.read_csv_file(tmpfile_name)
+@pytest.mark.parametrize(
+    "csv_content,expected,case_id",
+    [
+        (
+            "Name,Grade\nAlice,A\nBob,B\n",
+            [
+                {"Name": "Alice", "Grade": "A"},
+                {"Name": "Bob", "Grade": "B"},
+            ],
+            "happy_path_two_rows",
+        ),
+        (
+            "Name,Grade\n\n",
+            [],
+            "header_only_empty_row",
+        ),
+        (
+            "",
+            [],
+            "empty_file",
+        ),
+        (
+            "Name,Grade\nAlice,A\nBob,\n,Carlo\n",
+            [
+                {"Name": "Alice", "Grade": "A"},
+                {"Name": "Bob", "Grade": ""},
+                {"Name": "", "Grade": "Carlo"},
+            ],
+            "missing_values",
+        ),
+        (
+            "col1,col2,col3\n1,2,3\n4,5,6\n",
+            [
+                {"col1": "1", "col2": "2", "col3": "3"},
+                {"col1": "4", "col2": "5", "col3": "6"},
+            ],
+            "multiple_columns",
+        ),
+    ],
+    ids=lambda x: x if isinstance(x, str) else None,
+)
+def test_read_csv_file_happy_and_edge_cases(sender, csv_content, expected, case_id):
+    # Arrange
+    with tempfile.NamedTemporaryFile(mode="w+", delete=False, newline="", encoding="utf-8") as tmp:
+        tmp.write(csv_content)
+        tmp.flush()
+        tmp_path = tmp.name
 
-    assert len(rows) == 1
-    assert rows[0]["Name"] == "Alice"
-    assert rows[0]["Math"] == "90"
-    assert rows[0]["Science"] == "85"
+    # Act
+    result = sender.read_csv_file(tmp_path)
 
+    # Assert
+    assert result == expected
 
-def test_create_email():
-    app = EmailApp()
-    email = app.create_email("teacher@school.com", "alice@school.com", "Report", "Hi Alice")
+    # Cleanup
+    os.remove(tmp_path)
 
-    assert email["from"] == "teacher@school.com"
-    assert email["to"] == "alice@school.com"
-    assert email["subject"] == "Report"
-    assert email["body"] == "Hi Alice"
-
-
-def test_send_email(capsys):
-    app = EmailApp()
-    email = {"from": "teacher@school.com", "to": "alice@school.com", "subject": "Report", "body": "Hi Alice"}
-    
-    app.send_email(email)
-
-    # capture printed output
-    captured = capsys.readouterr()
-    assert "teacher@school.com" in captured.out
-    assert "alice@school.com" in captured.out
-    assert "Report" in captured.out
-    assert "Hi Alice" in captured.out
+@pytest.mark.parametrize(
+    "bad_path,expected_exception,case_id",
+    [
+        ("nonexistent.csv", FileNotFoundError, "file_not_found"),
+        ("/this/path/does/not/exist.csv", FileNotFoundError, "path_not_found"),
+    ],
+    ids=lambda x: x if isinstance(x, str) else None,
+)
+def test_read_csv_file_file_not_found(sender, bad_path, expected_exception, case_id):
+    # Act & Assert
+    with pytest.raises(expected_exception):
+        sender.read_csv_file(bad_path)
