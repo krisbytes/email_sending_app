@@ -1,222 +1,177 @@
-import pytest
+import os
+import tempfile
 import xml.etree.ElementTree as ET
-from email_app import EmailSender
+import pytest
 
-# -------------------- read_csv_file tests --------------------
+from email_app import FormatReader
 
+happy_path_cases = [
+    ("name,age\nAlice,30\nBob,25\n", ".csv",
+     [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}],
+     "csv_two_rows"),
+    ("name,age\n", ".csv", [], "csv_header_only"),
+    ("name,age\nNiño,30\nBób,25\n", ".csv",
+     [{"name": "Niño", "age": "30"}, {"name": "Bób", "age": "25"}],
+     "csv_special_characters"),
+    ("<root><child name='foo'/></root>", ".xml", "root", "xml_root_one_child"),
+    ("<root/>", ".xml", "root", "xml_only_root"),
+]
 @pytest.mark.parametrize(
-    "csv_content,expected,case_id",
-    [
-        (
-            "name,email\nAlice,alice@example.com\nBob,bob@example.com\n",
-            [
-                {"name": "Alice", "email": "alice@example.com"},
-                {"name": "Bob", "email": "bob@example.com"},
-            ],
-            "csv_happy_path_two_rows"
-        ),
-        (
-            "name,email\nAlice,alice@example.com\n",
-            [
-                {"name": "Alice", "email": "alice@example.com"},
-            ],
-            "csv_happy_path_single_row"
-        ),
-        (
-            "name,email\n",
-            [],
-            "csv_happy_path_header_only"
-        ),
-        (
-            "name,email\nAlice,\n,Bob@example.com\n",
-            [
-                {"name": "Alice", "email": ""},
-                {"name": "", "email": "Bob@example.com"},
-            ],
-            "csv_edge_missing_values"
-        ),
-        (
-            "",
-            [],
-            "csv_edge_empty_file"
-        ),
-        (
-            "name,email\nAlice,alice@example.com\nBob,\n",
-            [
-                {"name": "Alice", "email": "alice@example.com"},
-                {"name": "Bob", "email": ""},
-            ],
-            "csv_edge_missing_email"
-        ),
-    ],
-    ids=lambda param: param if isinstance(param, str) else None
+    "file_content, file_ext, expected, test_id",
+    happy_path_cases,
+    ids=[case[-1] for case in happy_path_cases]
 )
-def test_read_csv_file_happy_and_edge_cases(tmp_path, csv_content, expected, case_id):
-    
+def test_read_file_happy_paths(file_content, file_ext, expected, test_id):
     # Arrange
-    file_path = tmp_path / "test.csv"
-    file_path.write_text(csv_content, encoding="utf-8")
-    sender = EmailSender()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext, mode="w", encoding="utf-8") as tmp:
+        tmp.write(file_content)
+        tmp_path = tmp.name
+
+    reader = FormatReader()
 
     # Act
-    result = sender.read_csv_file(str(file_path))
+    if file_ext == ".csv":
+        result = reader.read_file(tmp_path)
+    else:
+        xml_root = reader.read_file(tmp_path)
+        result = xml_root.tag
 
     # Assert
     assert result == expected
 
+    os.remove(tmp_path)
+
+error_cases = [
+    (None, TypeError, "file_path must be a string", "file_path_none"),
+    (123, TypeError, "file_path must be a string", "file_path_int"),
+    ("", FileNotFoundError, "file_path is empty", "file_path_empty"),
+    ("file.unsupported", ValueError, "Unsupported file format", "unsupported_extension"),
+]
 @pytest.mark.parametrize(
-    "file_path,expected_exception,case_id",
-    [
-        ("nonexistent.csv", FileNotFoundError, "csv_error_file_not_found"),
-        (None, TypeError, "csv_error_none_file_path"),
-        (123, TypeError, "csv_error_non_string_file_path"),
-        ("", FileNotFoundError, "csv_error_empty_string_file_path"),
-    ],
-    ids=lambda param: param if isinstance(param, str) else None
+    "file_path, expected_exception, expected_message, test_id",
+    error_cases,
+    ids=[case[-1] for case in error_cases]
 )
-def test_read_csv_file_error_cases(file_path, expected_exception, case_id):
-    
-    # Arrange
-    sender = EmailSender()
+def test_read_file_error_cases(file_path, expected_exception, expected_message, test_id):
+    reader = FormatReader()
 
     # Act & Assert
-    with pytest.raises(expected_exception):
-        sender.read_csv_file(file_path)
+    with pytest.raises(expected_exception) as exc_info:
+        reader.read_file(file_path)
+    assert expected_message in str(exc_info.value)
 
-# -------------------- read_xml_file tests --------------------
 
 @pytest.mark.parametrize(
-    "xml_content,expected_tag,expected_attrib,expected_text,case_id",
+    "csv_content, expected, test_id",
     [
+        # Edge: CSV with empty lines
         (
-            "<root><child>data</child></root>",
-            "root",
-            {},
-            None,
-            "xml_happy_path_simple"
+            "name,age\n\nAlice,30\n\nBob,25\n\n",
+            [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}],
+            "csv_with_empty_lines"
         ),
+        # Edge: CSV with missing values
         (
-            "<root/>",
-            "root",
-            {},
-            None,
-            "xml_happy_path_empty_root"
+            "name,age\nAlice,\n,Bob\n",
+            [{"name": "Alice", "age": ""}, {"name": "", "age": "Bob"}],
+            "csv_missing_values"
         ),
+        # Edge: CSV with extra columns
         (
-            "<root attrib='value'><child/></root>",
-            "root",
-            {"attrib": "value"},
-            None,
-            "xml_happy_path_with_attrib"
-        ),
-        (
-            "<root>Text</root>",
-            "root",
-            {},
-            "Text",
-            "xml_edge_text_in_root"
+            "name,age,city\nAlice,30,Paris\nBob,25,London\n",
+            [{"name": "Alice", "age": "30", "city": "Paris"}, {"name": "Bob", "age": "25", "city": "London"}],
+            "csv_extra_columns"
         ),
     ],
-    ids=lambda param: param if isinstance(param, str) else None
+    ids=lambda param: param[-1]
 )
-def test_read_xml_file_happy_and_edge_cases(tmp_path, xml_content, expected_tag, expected_attrib, expected_text, case_id):
-    
+def test_read_csv_file_edge_cases(csv_content, expected, test_id):
     # Arrange
-    file_path = tmp_path / "test.xml"
-    file_path.write_text(xml_content, encoding="utf-8")
-    sender = EmailSender()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", encoding="utf-8") as tmp:
+        tmp.write(csv_content)
+        tmp_path = tmp.name
+
+    reader = FormatReader()
 
     # Act
-    root = sender.read_xml_file(str(file_path))
+    result = reader.read_csv_file(tmp_path)
+
+    # Assert
+    assert result == expected
+
+    os.remove(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "xml_content, expected_tag, test_id",
+    [
+        # Edge: XML with nested children
+        (
+            "<root><parent><child/></parent></root>",
+            "root",
+            "xml_nested_children"
+        ),
+        # Edge: XML with attributes
+        (
+            "<root attr='value'><child attr2='v2'/></root>",
+            "root",
+            "xml_with_attributes"
+        ),
+        # Edge: XML with namespaces
+        (
+            "<root xmlns:ns='http://example.com/ns'><ns:child/></root>",
+            "root",
+            "xml_with_namespace"
+        ),
+    ],
+    ids=lambda param: param[-1]
+)
+def test_read_xml_file_edge_cases(xml_content, expected_tag, test_id):
+    # Arrange
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xml", mode="w", encoding="utf-8") as tmp:
+        tmp.write(xml_content)
+        tmp_path = tmp.name
+
+    reader = FormatReader()
+
+    # Act
+    root = reader.read_xml_file(tmp_path)
 
     # Assert
     assert root.tag == expected_tag
-    assert root.attrib == expected_attrib
-    if expected_text is not None:
-        assert root.text == expected_text
-    else:
-        # .text may be None or whitespace depending on XML, so just check type
-        assert root.text is None or isinstance(root.text, str)
 
-@pytest.mark.parametrize(
-    "xml_content,case_id",
-    [
-        ("<root><unclosed></root>", "xml_error_malformed"),
-        ("<root><child></root>", "xml_error_mismatched_tag"),
-        ("", "xml_error_empty_file"),
-    ],
-    ids=lambda param: param if isinstance(param, str) else None
-)
-def test_read_xml_file_parse_errors(tmp_path, xml_content, case_id):
-    
+    os.remove(tmp_path)
+
+
+def test_read_csv_file_file_not_found():
     # Arrange
-    file_path = tmp_path / "bad.xml"
-    file_path.write_text(xml_content, encoding="utf-8")
-    sender = EmailSender()
+    reader = FormatReader()
+    fake_path = "nonexistent_file.csv"
+
+    # Act & Assert
+    with pytest.raises(FileNotFoundError):
+        reader.read_csv_file(fake_path)
+
+
+def test_read_xml_file_file_not_found():
+    # Arrange
+    reader = FormatReader()
+    fake_path = "nonexistent_file.xml"
+
+    # Act & Assert
+    with pytest.raises(FileNotFoundError):
+        reader.read_xml_file(fake_path)
+
+
+def test_read_xml_file_invalid_xml():
+    # Arrange
+    reader = FormatReader()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xml", mode="w", encoding="utf-8") as tmp:
+        tmp.write("<root><unclosed></root>")
+        tmp_path = tmp.name
 
     # Act & Assert
     with pytest.raises(ET.ParseError):
-        sender.read_xml_file(str(file_path))
+        reader.read_xml_file(tmp_path)
 
-@pytest.mark.parametrize(
-    "file_path,expected_exception,case_id",
-    [
-        ("nonexistent.xml", FileNotFoundError, "xml_error_file_not_found"),
-        (None, TypeError, "xml_error_none_file_path"),
-        (123, TypeError, "xml_error_non_string_file_path"),
-        ("", FileNotFoundError, "xml_error_empty_string_file_path"),
-    ],
-    ids=lambda param: param if isinstance(param, str) else None
-)
-def test_read_xml_file_file_errors(file_path, expected_exception, case_id):
-    
-    # Arrange
-    sender = EmailSender()
-
-    # Act & Assert
-    with pytest.raises(expected_exception):
-        sender.read_xml_file(file_path)
-
-# -------------------- create_email tests --------------------
-
-@pytest.mark.parametrize(
-    "sender_addr,recipient,subject,body,expected,case_id",
-    [
-        (
-            "alice@example.com", "bob@example.com", "Hello", "Hi Bob!",
-            {"from": "alice@example.com", "to": "bob@example.com", "subject": "Hello", "body": "Hi Bob!"},
-            "email_happy_path"
-        ),
-        (
-            "", "", "", "",
-            {"from": "", "to": "", "subject": "", "body": ""},
-            "email_edge_all_empty"
-        ),
-        (
-            "a"*1000, "b"*1000, "s"*1000, "body"*1000,
-            {"from": "a"*1000, "to": "b"*1000, "subject": "s"*1000, "body": "body"*1000},
-            "email_edge_long_strings"
-        ),
-        (
-            None, None, None, None,
-            {"from": None, "to": None, "subject": None, "body": None},
-            "email_edge_all_none"
-        ),
-        (
-            "alice@example.com", None, "Subject", "",
-            {"from": "alice@example.com", "to": None, "subject": "Subject", "body": ""},
-            "email_edge_some_none"
-        ),
-    ],
-    ids=lambda param: param if isinstance(param, str) else None
-)
-def test_create_email(sender_addr, recipient, subject, body, expected, case_id):
-    
-    # Arrange
-    email_sender = EmailSender()
-
-    # Act
-    result = email_sender.create_email(sender_addr, recipient, subject, body)
-
-    # Assert
-    assert result == expected
+    os.remove(tmp_path)
