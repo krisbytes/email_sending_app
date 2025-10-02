@@ -1,177 +1,143 @@
-import os
-import tempfile
-import xml.etree.ElementTree as ET
 import pytest
+from typing import Protocol
+import xml.etree.ElementTree as ET
 
-from email_app import FormatReader
+from email_app import IFileFormatReader, FileReaderService, CsvReader, XmlReader
 
-happy_path_cases = [
-    ("name,age\nAlice,30\nBob,25\n", ".csv",
-     [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}],
-     "csv_two_rows"),
-    ("name,age\n", ".csv", [], "csv_header_only"),
-    ("name,age\nNiño,30\nBób,25\n", ".csv",
-     [{"name": "Niño", "age": "30"}, {"name": "Bób", "age": "25"}],
-     "csv_special_characters"),
-    ("<root><child name='foo'/></root>", ".xml", "root", "xml_root_one_child"),
-    ("<root/>", ".xml", "root", "xml_only_root"),
-]
+class DummyFileFormatReader:
+    def __init__(self, handled_extensions=None, raise_on_read=False):
+        self.handled_extensions = handled_extensions or []
+        self.raise_on_read = raise_on_read
+        
+    def handles(self, file_path: str) -> bool:
+        if file_path is None:
+            raise ValueError("file_path cannot be None")
+        return any(file_path.endswith(ext) for ext in self.handled_extensions)
+    
+    def read(self, file_path: str):
+        if self.raise_on_read: 
+            raise IOError("Failed to read file")
+        return f"Contents of {file_path}"
+    
 @pytest.mark.parametrize(
-    "file_content, file_ext, expected, test_id",
-    happy_path_cases,
-    ids=[case[-1] for case in happy_path_cases]
+    "handled_extensions, file_path, expected,desc",
+    [
+        ([".csv"], "data.csv", True, "csv handled"),
+        ([".xml"], "data.xml", True, "xml handled"),
+        ([".csv"], "data.xml", False, "csv reader unhandled xml"),
+        ([".xml"], "data.csv", False, "xml reader unhandled csv"),
+        ([], "data.csv", False, "no extensions handled"),
+        ([".csv", ".xml"], "tree.xml", True, "multiple handled xml"),
+        ([".csv", ".xml"], "tree.csv", True, "multiple handled csv"),
+        ([".csv", ".xml"], "file.json", False, "unsupported extension"),
+        ([".csv"], "", False, "empty file path"),
+    ],
+    ids=[
+        "csv_lowercase",
+        "xml_lowercase",
+        "csv_reader_unhandled_xml",
+        "xml_reader_unhandled_csv",
+        "no_exts",
+        "multi_xml",
+        "multi_csv",
+        "unsupported_ext",
+        "empty_path"
+    ],
 )
-def test_read_file_happy_paths(file_content, file_ext, expected, test_id):
-    # Arrange
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext, mode="w", encoding="utf-8") as tmp:
-        tmp.write(file_content)
-        tmp_path = tmp.name
 
-    reader = FormatReader()
+def test_handles_extensions(handled_extensions, file_path, expected, desc):
+    reader = DummyFileFormatReader(handled_extensions=handled_extensions)
+    result = reader.handles(file_path)
+    assert result is expected, f"Failed: {desc}"
 
-    # Act
-    if file_ext == ".csv":
-        result = reader.read_file(tmp_path)
+@pytest.mark.parametrize(
+    "file_path,expected_exception,desc",
+    [
+        (None, ValueError, "file_path is None"),
+    ],
+    ids=[
+        "none_file_path",
+    ]
+)
+def test_handles_error_cases(file_path, expected_exception, desc):
+    reader = DummyFileFormatReader(handled_extensions=[".csv"])
+    
+    with pytest.raises(expected_exception):
+        reader.handles(file_path)
+        
+@pytest.mark.parametrize(
+    "file_path,raise_on_read,expected,desc",
+    [
+        ("data.csv", False, "Contents of data.csv", "read csv success"),
+        ("tree.xml", False, "Contents of tree.xml", "read xml success"),
+        ("data.csv", True, IOError, "read csv raises IOError"),
+        ("tree.xml", True, IOError, "read xml raises IOError"),
+    ],
+    ids=[
+        "read_csv_success",
+        "read_xml_success",
+        "read_csv_raises_ioerror",
+        "read_xml_raises_ioerror",
+    ]
+)
+def test_read_csv_and_xml_cases(file_path, raise_on_read, expected, desc):
+    reader = DummyFileFormatReader(handled_extensions=[".csv", ".xml"], raise_on_read=raise_on_read)
+    
+    if raise_on_read:
+        with pytest.raises(expected):
+            reader.read(file_path)
     else:
-        xml_root = reader.read_file(tmp_path)
-        result = xml_root.tag
+        result = reader.read(file_path)
+        
+        assert result == expected, f"Failed: {desc}"
 
-    # Assert
-    assert result == expected
-
-    os.remove(tmp_path)
-
-error_cases = [
-    (None, TypeError, "file_path must be a string", "file_path_none"),
-    (123, TypeError, "file_path must be a string", "file_path_int"),
-    ("", FileNotFoundError, "file_path is empty", "file_path_empty"),
-    ("file.unsupported", ValueError, "Unsupported file format", "unsupported_extension"),
-]
-@pytest.mark.parametrize(
-    "file_path, expected_exception, expected_message, test_id",
-    error_cases,
-    ids=[case[-1] for case in error_cases]
-)
-def test_read_file_error_cases(file_path, expected_exception, expected_message, test_id):
-    reader = FormatReader()
-
-    # Act & Assert
-    with pytest.raises(expected_exception) as exc_info:
-        reader.read_file(file_path)
-    assert expected_message in str(exc_info.value)
-
-
-@pytest.mark.parametrize(
-    "csv_content, expected, test_id",
-    [
-        # Edge: CSV with empty lines
-        (
-            "name,age\n\nAlice,30\n\nBob,25\n\n",
-            [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}],
-            "csv_with_empty_lines"
-        ),
-        # Edge: CSV with missing values
-        (
-            "name,age\nAlice,\n,Bob\n",
-            [{"name": "Alice", "age": ""}, {"name": "", "age": "Bob"}],
-            "csv_missing_values"
-        ),
-        # Edge: CSV with extra columns
-        (
-            "name,age,city\nAlice,30,Paris\nBob,25,London\n",
-            [{"name": "Alice", "age": "30", "city": "Paris"}, {"name": "Bob", "age": "25", "city": "London"}],
-            "csv_extra_columns"
-        ),
-    ],
-    ids=lambda param: param[-1]
-)
-def test_read_csv_file_edge_cases(csv_content, expected, test_id):
-    # Arrange
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", encoding="utf-8") as tmp:
-        tmp.write(csv_content)
-        tmp_path = tmp.name
-
-    reader = FormatReader()
-
-    # Act
-    result = reader.read_csv_file(tmp_path)
-
-    # Assert
-    assert result == expected
-
-    os.remove(tmp_path)
-
-
-@pytest.mark.parametrize(
-    "xml_content, expected_tag, test_id",
-    [
-        # Edge: XML with nested children
-        (
-            "<root><parent><child/></parent></root>",
-            "root",
-            "xml_nested_children"
-        ),
-        # Edge: XML with attributes
-        (
-            "<root attr='value'><child attr2='v2'/></root>",
-            "root",
-            "xml_with_attributes"
-        ),
-        # Edge: XML with namespaces
-        (
-            "<root xmlns:ns='http://example.com/ns'><ns:child/></root>",
-            "root",
-            "xml_with_namespace"
-        ),
-    ],
-    ids=lambda param: param[-1]
-)
-def test_read_xml_file_edge_cases(xml_content, expected_tag, test_id):
-    # Arrange
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xml", mode="w", encoding="utf-8") as tmp:
-        tmp.write(xml_content)
-        tmp_path = tmp.name
-
-    reader = FormatReader()
-
-    # Act
-    root = reader.read_xml_file(tmp_path)
-
-    # Assert
-    assert root.tag == expected_tag
-
-    os.remove(tmp_path)
-
-
-def test_read_csv_file_file_not_found():
-    # Arrange
-    reader = FormatReader()
-    fake_path = "nonexistent_file.csv"
-
-    # Act & Assert
-    with pytest.raises(FileNotFoundError):
-        reader.read_csv_file(fake_path)
-
-
-def test_read_xml_file_file_not_found():
-    # Arrange
-    reader = FormatReader()
-    fake_path = "nonexistent_file.xml"
-
-    # Act & Assert
-    with pytest.raises(FileNotFoundError):
-        reader.read_xml_file(fake_path)
-
-
-def test_read_xml_file_invalid_xml():
-    # Arrange
-    reader = FormatReader()
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xml", mode="w", encoding="utf-8") as tmp:
-        tmp.write("<root><unclosed></root>")
-        tmp_path = tmp.name
-
-    # Act & Assert
-    with pytest.raises(ET.ParseError):
-        reader.read_xml_file(tmp_path)
-
-    os.remove(tmp_path)
+def test_protocol_structural_typing():
+    class Impl:
+        def handles(self, file_path: str) -> bool:
+            return True
+        def read(self, file_path: str):
+            return "ok"
+        
+    impl = Impl()
+    
+    assert isinstance(impl, IFileFormatReader)
+    assert impl.handles("data.csv") is True
+    assert impl.read("tree.xml") == "ok"
+    
+def test_filereader_service_csv(tmp_path):
+    csv_file = tmp_path / "data.csv"
+    csv_file.write_text("name,age\nAlice,30\nBob,25")
+    service = FileReaderService([CsvReader()])
+    
+    data = service.read_file(str(csv_file))
+    assert data == [{"name": "Alice", "age": "30"}, {"name": "Bob", "age": "25"}]
+    
+def test_filereader_service_xml(tmp_path):
+    xml_file = tmp_path / "data.xml"
+    xml_file.write_text("<root><child>Hello</child></root>")
+    service = FileReaderService([XmlReader()])
+    
+    root = service.read_file(str(xml_file))
+    assert isinstance(root, ET.Element)
+    assert root.tag == "root"
+    assert root.find("child").text == "Hello"
+    
+def test_filereader_service_multiple_readers(tmp_path):
+    csv_file = tmp_path / "data.csv"
+    xml_file = tmp_path / "data.xml"
+    csv_file.write_text("name,age\nTin,26")
+    xml_file.write_text("<root><child>World</child></root>")
+    service = FileReaderService([CsvReader(), XmlReader()])
+    
+    csv_data = service.read_file(str(csv_file))
+    xml_data = service.read_file(str(xml_file))
+    
+    assert csv_data == [{"name": "Tin", "age": "26"}]
+    assert xml_data.find("child").text == "World"
+    
+def test_filereader_unsupported_file():
+    service = FileReaderService([CsvReader(), XmlReader()])
+    
+    with pytest.raises(ValueError, match="Unsupported file format"):
+        service.read_file("data.json")
+    

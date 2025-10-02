@@ -1,36 +1,40 @@
 import csv
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Union
+from typing import List, Dict, Protocol, runtime_checkable
 
+@runtime_checkable
+class IFileFormatReader(Protocol):
+    def handles(self, file_path: str) -> bool: ...
+    def read(self, file_path: str): ...
 
-
-
+class CsvReader:
+    def handles(self, file_path: str) -> bool:
+        return file_path.endswith(".csv")
     
-class FormatReader:
-    
-    def read_file(self, file_path: str) -> Union[List[Dict[str, str]], ET.Element]:
-        if not isinstance(file_path, str):
-            raise TypeError("file_path must be a string")
-        if not file_path:
-            raise FileNotFoundError("file_path is empty")
-        
-        if file_path.endswith(".csv"):
-            return self.read_csv_file(file_path)
-        elif file_path.endswith(".xml"):
-            return self.read_xml_file(file_path)
-        else:
-            raise ValueError("Unsupported file format")
-                    
-    def read_csv_file(self, file_path: str) -> List[Dict[str, str]]:# Method to read csv files        
+    def read(self, file_path: str) -> List[Dict[str, str]]:
         with open(file_path, mode='r', newline='', encoding='utf-8') as file:
             reader = csv.DictReader(file, delimiter=',')
             return list(reader)
-        
-    def read_xml_file(self, file_path: str): # Method to read xml files        
+    
+class XmlReader: 
+    def handles(self, file_path: str) -> bool:
+        return file_path.endswith(".xml")
+    
+    def read(self, file_path: str):
         tree = ET.parse(file_path)
         return tree.getroot()
-    
 
+class FileReaderService: 
+    def __init__(self, readers: List[IFileFormatReader]):
+        self.readers = readers
+
+    def read_file(self, file_path: str):
+        for reader in self.readers:
+            if reader.handles(file_path):
+                return reader.read(file_path)
+        raise ValueError("Unsupported file format")
+                    
+    
 class EmailSender:
     def create_email(self, sender, recipient, subject, body) -> Dict[str, str]:  # Method to create email
         return {"from": sender,
@@ -55,22 +59,22 @@ class EmailSendingApp:
         print(f"{indent}</{element.tag}>")
 
 if __name__ == "__main__":
-    reader = FormatReader()
+    file_reader_service = FileReaderService([CsvReader(), XmlReader()])
     sender = EmailSender()
     sending_app = EmailSendingApp()
     
     file_path = input("Enter the file path: ").strip()
     
     try:
-        data = reader.read_file(file_path)
+        data = file_reader_service.read_file(file_path)
     
-        if isinstance(data, list):
+        if file_path.endswith(".csv"):
             for row in data:
                 print(row)
         
-        elif isinstance(data, ET.Element):
+        elif file_path.endswith(".xml"):
             print(f"Contents of {file_path}:")
             sending_app.send_xml(data)
         
     except Exception as e:
-        print(f"Error: {e}")    
+        print(f"Error: {e}")   
